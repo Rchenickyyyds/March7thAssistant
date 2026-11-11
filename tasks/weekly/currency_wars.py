@@ -659,6 +659,8 @@ class CurrencyWars:
                     # 默认策略：商店里出现已拥有的角色就买，凑三合一升星
                     self.buy_owned_duplicates()
 
+                self.buy_trailblaze_shop()
+
                 skip_buy_experience = False
                 if cfg.currencywars_strategy == "aglaea" and not self.allow_buy_experience:
                     skip_buy_experience = True
@@ -1105,6 +1107,49 @@ class CurrencyWars:
         time.sleep(2)
         if bought:
             self.check_character_status()
+
+    def buy_trailblaze_shop(self):
+        """
+        入画奇航：开拓银轨羁绊的「开拓商店」用羁绊自己的货币，不花金币。
+        前台左侧出现「有商品可购买」时打开商店，把能买的都买掉（买得越多越快解锁帕姆王），再收起面板。
+        """
+        if not auto.find_element("有商品可购买", "text", None, 1, include=True, crop=(300 / 1920, 230 / 1080, 360 / 1920, 160 / 1080)):
+            return
+        log.info("开拓商店有商品可购买，打开商店")
+        title_crop = (900 / 1920, 50 / 1080, 300 / 1920, 60 / 1080)
+        opened = auto.click_element("打开商店", "text", None, 1, include=True, crop=(300 / 1920, 230 / 1080, 360 / 1920, 160 / 1080))
+        if not opened or not auto.find_element("开拓商店", "text", None, 3, include=True, crop=title_crop):
+            # 也可以点开拓银轨羁绊名右边的小开关
+            bond = auto.find_element("开拓银轨", "text", None, 1, include=True, crop=(0, 200 / 1080, 260 / 1920, 600 / 1080))
+            if bond:
+                auto.click_element_with_pos(bond, offset=(int(108 / 1920 * auto.screenshot.width / getattr(auto, "screenshot_scale_factor", 1)), 0))
+                time.sleep(1.5)
+        if not auto.find_element("开拓商店", "text", None, 3, include=True, crop=title_crop):
+            log.warning("开拓商店没有打开")
+            return
+        # 首次是卡背，先翻开
+        if auto.click_element("跃迁", "text", None, 1, include=True, crop=(900 / 1920, 340 / 1080, 360 / 1920, 80 / 1080)):
+            time.sleep(1.5)
+        currency_crop = (520 / 1920, 92 / 1080, 140 / 1920, 40 / 1080)
+        card_crops = [(450 / 1920, 170 / 1080, 200 / 1920, 200 / 1080), (700 / 1920, 170 / 1080, 200 / 1920, 200 / 1080),
+                      (950 / 1920, 170 / 1080, 200 / 1920, 200 / 1080), (1200 / 1920, 170 / 1080, 200 / 1920, 200 / 1080)]
+        last = None
+        for _ in range(8):
+            text = auto.get_single_line_text(crop=currency_crop)
+            currency = int(text) if text and text.isdigit() else None
+            log.info(f"开拓商店货币：{currency}")
+            if currency is None or currency < 15 or currency == last:
+                break
+            last = currency
+            for card in card_crops:
+                auto.click_element(card, "crop")
+                time.sleep(1)
+        # 收起面板：点开拓银轨羁绊旁的开关
+        bond = auto.find_element("开拓银轨", "text", None, 1, include=True, crop=(0, 200 / 1080, 260 / 1920, 600 / 1080))
+        if bond:
+            auto.click_element_with_pos(bond, offset=(int(108 / 1920 * auto.screenshot.width / getattr(auto, "screenshot_scale_factor", 1)), 0))
+            time.sleep(1.5)
+        self.check_character_status()
 
     def equip_aglaea(self):
         # 轮滑鞋
@@ -2035,6 +2080,13 @@ class CurrencyWars:
                     # 入画奇航：选 N 名角色「共舞」
                     log.info("检测到梦境交织")
                     self.choose_bond_panel_candidates()
+                elif "开拓商店" in result:
+                    # 入画奇航：开拓银轨羁绊激活后弹出「开拓商店」面板，盖住前台且出战无效。
+                    # 首次是卡背（星穹列车，跃迁！），要先点开，羁绊名右侧才会出现收起开关
+                    log.info("检测到开拓商店面板，收起")
+                    if auto.click_element("跃迁", "text", None, 1, include=True, crop=(900 / 1920, 340 / 1080, 360 / 1920, 80 / 1080)):
+                        time.sleep(1.5)
+                    auto.click_element((240 / 1920, 245 / 1080, 40 / 1920, 35 / 1080), "crop")
                 elif "选择伙伴" in result:
                     log.info("检测到选择伙伴")
                     choose1_crop = (936 / 1920, 165 / 1080, 222 / 1920, 265 / 1080)
@@ -2150,6 +2202,10 @@ class CurrencyWars:
         """
         stage_crop = (414 / 1920, 56 / 1080, 117 / 1920, 44 / 1080)
         stage_text = auto.get_single_line_text(crop=stage_crop)
+        if not (stage_text and re.match(r"^\d-\d$", stage_text)):
+            # 入画奇航：开拓银轨的「开拓商店」面板展开时，阶段标签会挪到左上角
+            shifted_crop = (270 / 1920, 82 / 1080, 120 / 1920, 48 / 1080)
+            stage_text = auto.get_single_line_text(crop=shifted_crop)
         if stage_text and re.match(r"^\d-\d$", stage_text):
             self._unrecognized_stage_count = 0
             log.hr(f"当前阶段：{stage_text}", 2)
@@ -2163,6 +2219,8 @@ class CurrencyWars:
                 log.warning("检测到当前阶段连续5次未发生变化，判定为卡死")
                 self.need_exit = True
         else:
+            # 入画奇航的羁绊面板打开时顶部标题会移位，先处理弹窗再算未识别
+            self.check_festival_star_popup()
             self._unrecognized_stage_count += 1
             log.warning(f"未能识别当前货币战争阶段（连续{self._unrecognized_stage_count}次）")
             if self._unrecognized_stage_count >= 5:
