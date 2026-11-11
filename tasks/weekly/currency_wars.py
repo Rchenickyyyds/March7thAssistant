@@ -655,6 +655,10 @@ class CurrencyWars:
                         log.info("首次获得希儿，立即出售多余角色")
                         self.sell_characters_seele_strategy()
 
+                elif cfg.currencywars_strategy == "default":
+                    # 默认策略：商店里出现已拥有的角色就买，凑三合一升星
+                    self.buy_owned_duplicates()
+
                 skip_buy_experience = False
                 if cfg.currencywars_strategy == "aglaea" and not self.allow_buy_experience:
                     skip_buy_experience = True
@@ -1062,6 +1066,44 @@ class CurrencyWars:
         auto.click_element(shop_button_crop, "crop")
         time.sleep(2)
         if buy_anything:
+            self.check_character_status()
+
+    def buy_owned_duplicates(self, keep_money: int = 0):
+        """
+        默认策略的购买逻辑：商店里出现已拥有（前台/后台/备战席）的角色就买，凑三合一升星。
+        费用取自角色信息缓存；钱不够就跳过，不刷新商店。
+        """
+        owned = {}
+        for char in self.forward_characters + self.backward_characters + self.prepare_characters:
+            if char.name and char.name in self.character_info_cache:
+                owned[char.name] = self.character_info_cache[char.name].money
+        if not owned:
+            return
+        money = self.check_money()
+        if money - keep_money < min(owned.values()):
+            return
+        shop_button_crop = (1591 / 1920, 958 / 1080, 66 / 1920, 46 / 1080)
+        shop_crop = (344 / 1920, 19 / 1080, 1370 / 1920, 526 / 1080)
+        log.info("打开商店购买已拥有的角色")
+        auto.click_element(shop_button_crop, "crop")
+        time.sleep(2)
+        bought = False
+        for _ in range(5):
+            texts = self._get_ocr_texts_in_crop(shop_crop)
+            target = None
+            # 先买贵的（一般更强）
+            for name, cost in sorted(owned.items(), key=lambda x: -x[1]):
+                if money - cost >= keep_money and name in texts:
+                    target = name
+                    break
+            if not target or not self.try_buy_character(target):
+                break
+            money -= owned[target]
+            bought = True
+        log.info("关闭商店")
+        auto.click_element(shop_button_crop, "crop")
+        time.sleep(2)
+        if bought:
             self.check_character_status()
 
     def equip_aglaea(self):
