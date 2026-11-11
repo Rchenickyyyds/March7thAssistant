@@ -682,6 +682,8 @@ class CurrencyWars:
                 if not skip_equip_weapons:
                     self.equip_weapons()
                 self.choose_protagonist()
+                if self.handle_tea_break():
+                    return True
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
                 time.sleep(2)
                 if auto.click_element("本局不再提示", "text", crop=(905 / 1920, 571 / 1080, 171 / 1920, 50 / 1080)):
@@ -1999,6 +2001,43 @@ class CurrencyWars:
                 continue
             else:
                 break
+
+    def handle_tea_break(self) -> bool:
+        """入画奇航：「幕后茶歇」节点没有出战按钮。进去和奇遇伙伴「聊一聊」（赛季指南有对应任务），
+        选对话里的选项并确认，领完茶歇奖励后回到备战界面。"""
+        if not auto.click_element("幕后茶歇", "text", None, 1, crop=(1580 / 1920, 680 / 1080, 340 / 1920, 120 / 1080), include=True):
+            return False
+        log.info("检测到幕后茶歇节点")
+        time.sleep(3)
+        # 首次进入有教学气泡，第一次点击可能只会关掉气泡
+        for _ in range(4):
+            if auto.click_element("聊一聊", "text", None, 1, crop=(150 / 1920, 780 / 1080, 450 / 1920, 120 / 1080)):
+                time.sleep(3)
+            if not auto.find_element("聊一聊", "text", None, 1, crop=(150 / 1920, 780 / 1080, 450 / 1920, 120 / 1080)):
+                break
+        exit_crop = (3.0 / 1920, 37.0 / 1080, 104.0 / 1920, 57.0 / 1080)
+        option_confirmed = False
+        for _ in range(25):
+            if auto.find_element("./assets/images/screen/currency_wars/exit.png", "image", 0.9, crop=exit_crop):
+                log.info("幕后茶歇完成")
+                return True
+            # 选项框在右侧，最后一项是「返回」；选中返回上面那一项后右侧出现「确认」
+            if not option_confirmed:
+                back = auto.find_element("返回", "text", None, 1, crop=(1000 / 1920, 300 / 1080, 700 / 1920, 600 / 1080))
+                if back:
+                    h = auto.screenshot.height / getattr(auto, "screenshot_scale_factor", 1)
+                    auto.click_element_with_pos(back, offset=(0, -int(0.16 * h)))
+                    time.sleep(1)
+                    if auto.click_element("确认", "text", None, 3, crop=(1650 / 1920, 300 / 1080, 270 / 1920, 600 / 1080)):
+                        log.info("幕后茶歇：已选择伙伴选项")
+                        option_confirmed = True
+                    time.sleep(2)
+                    continue
+            if not auto.click_element(("开启", "点击空白处继续"), "text", None, 1, include=True):
+                auto.click_element((860 / 1920, 900 / 1080, 200 / 1920, 80 / 1080), "crop")
+            time.sleep(2)
+        log.warning("幕后茶歇未能回到备战界面")
+        return True
 
     def choose_protagonist(self) -> bool:
         """入画奇航：出战按钮变成「选择主角」时，选一张主角光环并把前台第一个角色放进去。"""
