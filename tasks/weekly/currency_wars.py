@@ -681,6 +681,7 @@ class CurrencyWars:
                     skip_equip_weapons = True
                 if not skip_equip_weapons:
                     self.equip_weapons()
+                self.choose_protagonist()
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
                 time.sleep(2)
                 if auto.click_element("本局不再提示", "text", crop=(905 / 1920, 571 / 1080, 171 / 1920, 50 / 1080)):
@@ -1998,6 +1999,39 @@ class CurrencyWars:
                 continue
             else:
                 break
+
+    def choose_protagonist(self) -> bool:
+        """入画奇航：出战按钮变成「选择主角」时，选一张主角光环并把前台第一个角色放进去。"""
+        if not auto.click_element("选择主角", "text", None, 1, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True):
+            return False
+        log.info("选择主角光环")
+        time.sleep(2)
+        card_crops = [(140 / 1920, 300 / 1080, 440 / 1920, 360 / 1080), (1340 / 1920, 300 / 1080, 440 / 1920, 360 / 1080)]
+        front_crops = [(770 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (876 / 1920, 580 / 1080, 70 / 1920, 70 / 1080),
+                       (982 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (1086 / 1920, 580 / 1080, 70 / 1920, 70 / 1080)]
+        slot_crop = (920 / 1920, 420 / 1080, 80 / 1920, 80 / 1080)
+        for card in card_crops:
+            auto.click_element(card, "crop")
+            time.sleep(1)
+            for front in front_crops:
+                src = auto.find_element(front, "crop")
+                dst = auto.find_element(slot_crop, "crop")
+                if not src or not dst:
+                    continue
+                auto.click_element_with_pos(src, action="down")
+                time.sleep(0.5)
+                auto.click_element_with_pos(dst, action="move")
+                time.sleep(0.5)
+                auto.mouse_up()
+                time.sleep(1)
+                if not auto.find_element("尚未选择", "text", include=True, crop=(700 / 1920, 860 / 1080, 520 / 1920, 60 / 1080)):
+                    auto.click_element("确认", "text", None, 3, crop=(750 / 1920, 920 / 1080, 420 / 1920, 70 / 1080))
+                    time.sleep(2)
+                    return True
+        log.warning("主角光环没选上，返回备战界面")
+        auto.click_element("返回备战界面", "text", include=True)
+        time.sleep(2)
+        return False
 
     def identify_current_stage(self):
         """
