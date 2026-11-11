@@ -681,6 +681,7 @@ class CurrencyWars:
                     skip_equip_weapons = True
                 if not skip_equip_weapons:
                     self.equip_weapons()
+                self.check_festival_star_popup()
                 self.choose_protagonist()
                 if self.handle_tea_break():
                     return True
@@ -1988,6 +1989,10 @@ class CurrencyWars:
                     auto.click_element(choose1_crop, "crop")
                     time.sleep(0.5)
                     auto.click_element("确认选择", "text", crop=(1425 / 1920, 614 / 1080, 138 / 1920, 52 / 1080))
+                elif "梦境交织" in result:
+                    # 入画奇航：选 N 名角色「共舞」
+                    log.info("检测到梦境交织")
+                    self.choose_bond_panel_candidates()
                 elif "选择伙伴" in result:
                     log.info("检测到选择伙伴")
                     choose1_crop = (936 / 1920, 165 / 1080, 222 / 1920, 265 / 1080)
@@ -2001,6 +2006,31 @@ class CurrencyWars:
                 continue
             else:
                 break
+
+    def choose_bond_panel_candidates(self):
+        """入画奇航羁绊选人面板（如梦境交织）：按「详情」按钮定位候选卡，依次点上，再确认选择。"""
+        auto.take_screenshot()
+        auto.perform_ocr()
+        detail_boxes = []
+        for box, (text, _conf) in auto.ocr_result:
+            if "详情" in text:
+                top_left, bottom_right = auto.calculate_text_position(box, False)
+                cy = (top_left[1] + bottom_right[1]) / 2
+                # 面板在屏幕上半部；备战席里的“详情”不算
+                if cy - auto.screenshot_pos[1] < 500 / 1080 * auto.screenshot.height:
+                    detail_boxes.append((top_left, bottom_right))
+        need = 2
+        m = re.search(r"请选择(\d)名", "".join(t for _, (t, _c) in auto.ocr_result))
+        if m:
+            need = int(m.group(1))
+        detail_boxes.sort(key=lambda b: b[0][0])
+        h = auto.screenshot.height
+        for top_left, bottom_right in detail_boxes[:need]:
+            card = ((top_left[0], int(top_left[1] - 0.12 * h)), (bottom_right[0], int(bottom_right[1] - 0.12 * h)))
+            auto.click_element_with_pos(card)
+            time.sleep(0.5)
+        auto.click_element("确认选择", "text", include=True, crop=(1200 / 1920, 500 / 1080, 500 / 1920, 160 / 1080))
+        time.sleep(1)
 
     def handle_tea_break(self) -> bool:
         """入画奇航：「幕后茶歇」节点没有出战按钮。进去和奇遇伙伴「聊一聊」（赛季指南有对应任务），
