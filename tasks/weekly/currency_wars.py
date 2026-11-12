@@ -3793,6 +3793,29 @@ class CurrencyWars:
             # 好运来：合成与获得进阶装备时，改为获得一个【好运令牌】。获得2件随机简易装备。
 
             black_list = ('深井角斗场', '佩佩客串', '钻石商人', '现金为王', '降本增效', '大裁员', '人力重组', '全员晋升', '节省工位', '奋斗协议', '专家研讨会', '快请专家', '英雄登场', '命运礼物', '独家代言', '全都要', '广聚天下英才', '阿哈大悦', '好运来')
+            if not has_choose and cfg.currencywars_strategy == "default":
+                # 选项文字里带羁绊链路目标羁绊名的（「X概念股」送该羁绊角色并提高刷新率、「X邀请」送星徽）优先，
+                # 当前主攻的排最前；选了以后本局主攻往它靠
+                tg = self.bond_targets()
+                focus = getattr(self, "_bond_focus", None) or {}
+                best = None
+                for index, texts in enumerate(option_texts):
+                    joined = "".join(texts)
+                    if not joined.strip() or self._find_text_in_texts(texts, black_list, include=True):
+                        continue
+                    for b in tg:
+                        if b in joined:
+                            key = (0 if b in focus else 1, tg[b], index)
+                            if best is None or key < best[0]:
+                                best = (key, index, b, texts)
+                if best:
+                    _, index, b, texts = best
+                    auto.click_element(button_positions_click[index], 'crop')
+                    log.info(f"羁绊链路：选择带「{b}」的选项（第{index + 1}个）")
+                    self._bond_env = b
+                    has_choose = True
+                    self.check_special_characters(texts=texts)
+
             if not has_choose:
                 for index, texts in enumerate(option_texts):
                     matched_black_text = self._find_text_in_texts(texts, black_list, include=True)
