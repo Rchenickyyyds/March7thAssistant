@@ -1590,10 +1590,66 @@ class CurrencyWars:
         self.click_origin()
         return False
 
+    def _gray_crop(self, crop):
+        auto.take_screenshot(crop=crop)
+        return np.asarray(auto.screenshot.convert("L"), dtype=np.int16)
+
+    def equip_by_drag(self):
+        """入画奇航：角色面板只有「推荐」参考，没有一键合成/穿戴（旧逻辑找「装备推荐」永远找不到，等于从不穿装备）。
+        把右侧物品栏第一格的装备拖到上场角色身上：同一角色两件简易装备自动合成进阶装备，每人 3 格（6 件散件）。
+        优先给主攻阵容里费用高的角色，凑满一个再给下一个（成对给才会合成）。"""
+        slot = (1815 / 1920, 222 / 1080, 56 / 1920, 56 / 1080)
+        column = (1812 / 1920, 215 / 1080, 62 / 1920, 390 / 1080)
+        owned = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+        given = {n: v for n, v in getattr(self, "_equip_given", {}).items() if n in owned}
+        counts = self.owned_bond_counts()
+        targets = []
+        for chars, positions in ((self.forward_characters, self.forward_pos), (self.backward_characters, self.backward_pos)):
+            for idx, c in enumerate(chars):
+                if c.name and idx < len(positions):
+                    targets.append((-((c.money or 0) + self.bond_bonus(c.name, counts)), len(targets), c.name, positions[idx]))
+        targets.sort()
+        moved, failed = 0, []
+        for _ in range(12):
+            tgt = next(((n, pos) for _, _, n, pos in targets if given.get(n, 0) < 6 and n not in failed), None)
+            if not tgt:
+                break
+            name, pos = tgt
+            before = self._gray_crop(column)
+            src = auto.find_element(slot, "crop")
+            dst = auto.find_element(pos, "crop")
+            if not src or not dst:
+                break
+            auto.click_element_with_pos(src, action="down")
+            time.sleep(0.4)
+            auto.click_element_with_pos(dst, action="move")
+            time.sleep(0.4)
+            auto.mouse_up()
+            time.sleep(0.7)
+            after = self._gray_crop(column)
+            if before.shape == after.shape and float(np.abs(before - after).mean()) < 2.0:
+                # 物品栏没变化：要么空了，要么这个角色装不下。换下一个角色再试一次，还不行就是空了
+                failed.append(name)
+                if len(failed) >= 2:
+                    break
+                continue
+            if failed:
+                given[failed[-1]] = 6  # 上一个确实是装不下
+                failed = []
+            given[name] = given.get(name, 0) + 1
+            moved += 1
+            log.info(f"装备：拖给 {name}（第 {given[name]} 件）")
+        self._equip_given = given
+        self.click_origin()
+        return moved
+
     def equip_weapons(self):
         """
         装备武器
         """
+        if cfg.currencywars_strategy == "default":
+            self.equip_by_drag()
+            return
         if cfg.currencywars_fast_mode:
             if ((cfg.currencywars_type == "normal"
                  and self.current_stage not in ("1-9", "2-7", "3-7"))
