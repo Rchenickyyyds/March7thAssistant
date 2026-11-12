@@ -633,6 +633,15 @@ class CurrencyWars:
             if auto.find_element("./assets/images/screen/currency_wars/exit.png", "image", 0.9, crop=exit_crop):
                 if auto.click_element('收起', 'text', None, 1, crop=(1593.0 / 1920, 959.0 / 1080, 60.0 / 1920, 43.0 / 1080)):
                     time.sleep(2)
+                _t0 = _tl = time.monotonic()
+                _marks = []
+
+                def _mark(label):
+                    nonlocal _tl
+                    now = time.monotonic()
+                    _marks.append(f"{label}{now - _tl:.0f}")
+                    _tl = now
+
                 self.check_festival_star_popup()
                 self.identify_current_stage()
                 if self.need_exit:
@@ -642,8 +651,10 @@ class CurrencyWars:
                 if self.collect_reward() is False:
                     # 已识别备战界面；留待下一轮重试，不能直接购买或出战。
                     return True
+                _mark("领奖")
                 self.check_box()
                 self.check_character_status()
+                _mark("识别")
                 log.info(f"当前关卡阶段: {self.current_stage}")
                 if cfg.currencywars_strategy == "aglaea":
                     if self.current_stage == "1-1":
@@ -696,7 +707,9 @@ class CurrencyWars:
                     skip_buy_experience = True
                 if not skip_buy_experience:
                     self.buy_experience()
+                _mark("经验")
                 self.deploy_and_optimize()
+                _mark("部署")
 
                 if cfg.currencywars_strategy == "aglaea":
                     self.equip_aglaea()
@@ -711,6 +724,7 @@ class CurrencyWars:
 
                 self.sell_characters()
                 self.trim_bench()
+                _mark("出售")
                 skip_equip_weapons = False
                 if cfg.currencywars_strategy == "aglaea" and not self.allow_equip_weapons:
                     skip_equip_weapons = True
@@ -718,6 +732,7 @@ class CurrencyWars:
                     skip_equip_weapons = True
                 if not skip_equip_weapons:
                     self.equip_weapons()
+                _mark("装备")
                 self.check_festival_star_popup()
                 self.choose_protagonist()
                 self.reselect_protagonist_guide()
@@ -725,6 +740,13 @@ class CurrencyWars:
                 self.fix_over_limit()
                 if self.handle_tea_break():
                     return True
+                _mark("光环等")
+                if cfg.currencywars_strategy == "default":
+                    self._last_bond_list = self.read_bond_list()
+                    if self._last_bond_list:
+                        tg = self.bond_targets()
+                        log.info("羁绊列表：" + " ".join(f"{b}{n}" + (f"/{tg[b]}" if b in tg else "") for b, n in self._last_bond_list.items()))
+                log.info(f"准备阶段用时 {time.monotonic() - _t0:.0f}s（{' '.join(_marks)}），出战")
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
                 time.sleep(1)
                 self.fix_bench_full()  # 提示是点出战后才冒出来的
@@ -1644,6 +1666,36 @@ class CurrencyWars:
         self._equip_given = given
         self.click_origin()
         return moved
+
+    def read_bond_list(self) -> dict:
+        """读备战界面左侧的羁绊列表 {羁绊: 人数}（游戏里的真实计数，含星徽等加成；只读得到当前可见的几行）。"""
+        try:
+            auto.take_screenshot(crop=(0, 190 / 1080, 290 / 1920, 600 / 1080))
+            auto.perform_ocr()
+            h = auto.screenshot.height
+            items = sorted((box[0][1], box[0][0], text.strip()) for box, (text, _c) in (auto.ocr_result or []) if text.strip())
+        except Exception as e:
+            log.debug(f"读取羁绊列表失败: {e}")
+            return {}
+        known = set(BOND_LINK_TARGETS) | {"千星商会"}
+        res = {}
+        for y, x, t in items:
+            if t not in known:
+                continue
+            count = None
+            for yy, xx, tt in items:
+                if 0 < yy - y < h * 0.09 and re.match(r"^\d+(/\d+)+$", tt):
+                    nums = [int(v) for v in tt.split("/")]
+                    if len(nums) == 2:
+                        count = nums[0]  # 未激活：人数/下一档
+                    else:
+                        # 已激活：只列各档门槛，人数看左边图标角标
+                        badge = [int(t2) for y2, x2, t2 in items if abs(y2 - y) < h * 0.07 and x2 < x and t2.isdigit()]
+                        count = badge[0] if badge else nums[0]
+                    break
+            if count is not None:
+                res[t] = count
+        return res
 
     def equip_weapons(self):
         """
@@ -3660,6 +3712,12 @@ class CurrencyWars:
             screen.wait_for_screen_change("currency_wars_homepage")
         if self.result is not None:
             log.info(f"本次对局结果：{'胜利' if self.result else '失败'}")
+            if self.result:
+                real = getattr(self, "_last_bond_list", None) or {}
+                if real:
+                    tg = self.bond_targets()
+                    hit = [f"{t}{b}" for b in real for t in BOND_LINK_TARGETS.get(b, []) if t >= tg.get(b, 99) and real[b] >= t]
+                    log.info("羁绊链路：最后一关前羁绊列表 " + " ".join(f"{b}{n}" for b, n in real.items()) + ("；应可领 " + "、".join(hit) if hit else "；没有新达成的目标"))
         else:
             log.info("本次对局结果：未知")
         log.info("已返回货币战争首页")
