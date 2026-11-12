@@ -1756,6 +1756,78 @@ class CurrencyWars:
         if sold:
             time.sleep(1)
 
+    def _bond_link_swap(self, assigned: dict, max_need: int = 2):
+        """羁绊链路按「通关时的羁绊列表」算，只数上场的不同角色。
+        某个未完成目标羁绊上场还差 ≤max_need 人、备战席正好有带该羁绊的角色时，
+        把上场里最便宜、且换下后不会让已达标目标羁绊掉层的角色换下去。"""
+        db = self.char_db()
+        targets = self.bond_targets()
+        if not targets:
+            return
+
+        def bonds_of(item):
+            return db.get(item["c"].name, {}).get("bonds", [])
+
+        def counts(items):
+            cnt, seen = {}, set()
+            for it in items:
+                n = it["c"].name
+                if n and n not in seen:
+                    seen.add(n)
+                    for b in bonds_of(it):
+                        cnt[b] = cnt.get(b, 0) + 1
+            return cnt
+
+        def reached(cnt):
+            return {b for b, t in targets.items() if cnt.get(b, 0) >= t}
+
+        for _ in range(3):
+            deployed = [(z, i, it) for z in ("forward", "backward") for i, it in enumerate(assigned[z]) if it["c"].name]
+            cnt = counts([it for _, _, it in deployed])
+            done = reached(cnt)
+            on_field = {it["c"].name for _, _, it in deployed}
+            bench, seen = [], set()
+            for it in assigned["prepare"]:
+                n = it["c"].name
+                if n and n not in on_field and n not in seen and n in db:
+                    seen.add(n)
+                    bench.append(it)
+            best = None
+            for b, t in sorted(targets.items(), key=lambda x: x[1] - cnt.get(x[0], 0)):
+                need = t - cnt.get(b, 0)
+                if need <= 0 or need > max_need:
+                    continue
+                ins = sorted([it for it in bench if b in bonds_of(it)], key=lambda it: -(it["c"].money or 0))[:need]
+                if len(ins) < need:
+                    continue
+                # 换下的人：不带 b、换下后已达标的目标不掉，按费用从低到高
+                victims = sorted([d for d in deployed if b not in bonds_of(d[2])], key=lambda d: d[2]["c"].money or 0)
+                plan, used_v = [], set()
+                for inc in ins:
+                    pos = inc["c"].pos
+                    for v in victims:
+                        z, i, it = v
+                        if (z, i) in used_v or pos not in (z, "all"):
+                            continue
+                        used_v.add((z, i))
+                        plan.append((z, i, inc))
+                        break
+                if len(plan) < need:
+                    continue
+                trial = [it for z, i, it in deployed if (z, i) not in used_v] + [inc for _, _, inc in plan]
+                new_done = reached(counts(trial))
+                if done <= new_done and len(new_done) > len(done):
+                    best = (b, t, plan)
+                    break
+            if not best:
+                return
+            b, t, plan = best
+            for z, i, inc in plan:
+                out = assigned[z][i]
+                log.info(f"羁绊链路：{inc['c'].name} 上场替换 {out['c'].name}（凑 {t} {b}）")
+                assigned["prepare"] = [x for x in assigned["prepare"] if x is not inc] + [out]
+                assigned[z][i] = inc
+
     def deploy_and_optimize(self):
         """
         部署并自动调整最优站位：
@@ -1909,6 +1981,9 @@ class CurrencyWars:
         #         log.debug(f"从备战席移动 {len(to_move)} 个角色到后台: {[item['c'].name for item in to_move]}")
         #         log.debug(
         #             f"调整后区域结果: {self.zone_name_localization['forward']}={len(assigned['forward'])}, {self.zone_name_localization['backward']}={len(assigned['backward'])}, {self.zone_name_localization['prepare']}={len(assigned['prepare'])}, total used={used}/{limit}")
+
+        if cfg.currencywars_strategy == "default":
+            self._bond_link_swap(assigned)
 
         # 4️⃣ 填充空位
         for zone in ["forward", "backward"]:
