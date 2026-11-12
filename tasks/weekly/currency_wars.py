@@ -36,6 +36,7 @@ BOND_LINK_TARGETS = {
 CW_CHAR_DB_PATH = "./settings/cw_characters.json"  # 角色库：名字 → 费用/站位/羁绊，跨局累积
 CW_BOND_DONE_PATH = "./settings/cw_bond_done.json"  # 已领的羁绊链路 {羁绊: [层数,...]}
 CW_BOND_REACHED_PATH = "./settings/cw_bond_reached.json"  # 通关时游戏内羁绊列表已达成、还没去领的 {羁绊: [层数,...]}，不再追
+CW_EXPECT_DONE_PATH = "./settings/cw_expect_done.json"  # 已完成的预期收益小目标，如 ["aura5"]
 CW_PROTAGONIST_PATH = "./settings/cw_protagonist_picked.json"  # 选过主角光环的角色（预期收益：15 名不同角色）
 
 
@@ -437,6 +438,8 @@ class CurrencyWars:
 
         log.info("开始对局")
         self._aura_char = None
+        self._aura5_done = False
+        self._aura5_tried = 0
         self._focus_short = False
         self._last_bond_list = {}
         self._box_fails = 0
@@ -748,6 +751,7 @@ class CurrencyWars:
                 self.check_festival_star_popup()
                 self.choose_protagonist()
                 self.reselect_protagonist_guide()
+                self.reselect_aura_for_5cost()
                 self.fix_bench_full()
                 self.fix_over_limit()
                 if self.handle_tea_break():
@@ -1900,6 +1904,21 @@ class CurrencyWars:
         self._bond_focus, self._bond_team = focus, team
         return focus
 
+    def _want_aura5(self) -> bool:
+        """预期收益「通关时阵容中存在 1 名携带主角光环的 5 费角色」还没拿、且本局还没给出去。"""
+        if cfg.currencywars_strategy != "default" or getattr(self, "_aura5_done", False):
+            return False
+        return "aura5" not in _load_json(CW_EXPECT_DONE_PATH, [])
+
+    def _aura5_pick(self) -> Optional[str]:
+        """已拥有的、能站前台的 5 费角色（给主角光环用），没有返回 None。"""
+        db = self.char_db()
+        for c in self.forward_characters + self.backward_characters + self.prepare_characters:
+            info = db.get(c.name or "", {})
+            if c.name and info.get("money", 0) >= 5 and info.get("pos") in ("forward", "all"):
+                return c.name
+        return None
+
     def bond_bonus(self, name: Optional[str], counts: Optional[dict] = None) -> int:
         """羁绊链路加权：在主攻阵容里 +6；带主攻羁绊且该羁绊人还没凑够（可当替补）+3；
         带其他目标羁绊、且这一个就能凑齐时 +3；其余不加。"""
@@ -1911,6 +1930,13 @@ class CurrencyWars:
         focus = self.bond_focus()
         if name in getattr(self, "_bond_team", ()):
             return 6
+        if name == getattr(self, "_aura_char", None):
+            return 6  # 带主角光环的角色留在场上
+        info5 = self.char_db().get(name, {})
+        if info5.get("money", 0) >= 5 and info5.get("pos") in ("forward", "all") and self._want_aura5():
+            have5 = self._aura5_pick()
+            if have5 is None or have5 == name:
+                return 6  # 买一个能站前台的 5 费角色上场，拿「主角光环给 5 费角色」
         real = getattr(self, "_last_bond_list", None) or {}
         bonus = 0
         for bond in self.char_db().get(name, {}).get("bonds", []):
@@ -2805,6 +2831,38 @@ class CurrencyWars:
             return False
         return self.pick_protagonist_card()
 
+    def reselect_aura_for_5cost(self) -> bool:
+        """第三位面前台有 5 费角色、而主角光环还没给过 5 费角色时，主动重选一次主角光环给它
+        （左上主角光环框 → 重选主角 → 确认 → 选卡；和 2-1 的重选引导是同一套操作）。每局最多试 2 次。"""
+        if not self._want_aura5() or self._plane() < 3 or getattr(self, "_aura5_tried", 0) >= 2:
+            return False
+        if not any(c.name and (c.money or 0) >= 5 for c in self.forward_characters):
+            return False
+        self._aura5_tried = getattr(self, "_aura5_tried", 0) + 1
+        log.info("预期收益：前台有 5 费角色，重选主角光环给它")
+        opened = False
+        for _ in range(2):
+            auto.click_element((40 / 1920, 120 / 1080, 170 / 1920, 80 / 1080), "crop")
+            time.sleep(1.5)
+            if auto.click_element("重选主角", "text", None, 2, include=True, crop=(560 / 1920, 680 / 1080, 400 / 1920, 60 / 1080)):
+                opened = True
+                break
+        if not opened:
+            log.warning("重选主角光环：没找到「重选主角」按钮（可能没有重选次数了）")
+            auto.press_key("esc")
+            time.sleep(1)
+            self.click_origin()
+            return False
+        time.sleep(1.5)
+        auto.click_element("确认", "text", None, 3, crop=(1050 / 1920, 630 / 1080, 300 / 1920, 80 / 1080))
+        time.sleep(2.5)
+        if not auto.find_element("主角光环", "text", None, 3, include=True, crop=(700 / 1920, 60 / 1080, 520 / 1920, 60 / 1080)):
+            log.warning("重选主角光环：没进到选择界面")
+            auto.press_key("esc")
+            time.sleep(1.5)
+            return False
+        return self.pick_protagonist_card()
+
     def pick_protagonist_card(self) -> bool:
         """在「选择一个角色获得主角光环」界面选一张光环卡并把前台角色拖进去。"""
         self.refresh_protagonist_cards()
@@ -2853,6 +2911,8 @@ class CurrencyWars:
                     if fi < len(fc) and fc[fi].name:
                         log.info(f"主角光环给 {fc[fi].name}")
                         self._aura_char = fc[fi].name
+                        if (fc[fi].money or 0) >= 5:
+                            self._aura5_done = True
                         if fc[fi].name not in picked:
                             _save_json(CW_PROTAGONIST_PATH, sorted(picked | {fc[fi].name}))
                     auto.click_element("确认", "text", None, 3, crop=(750 / 1920, 920 / 1080, 420 / 1920, 70 / 1080))
@@ -3936,6 +3996,11 @@ class CurrencyWars:
                 if real:
                     tg = self.bond_targets()
                     hit = [f"{t}{b}" for b in real for t in BOND_LINK_TARGETS.get(b, []) if t >= tg.get(b, 99) and real[b] >= t]
+                    if getattr(self, "_aura5_done", False):
+                        log.info("预期收益：本局主角光环给了 5 费角色，应可领")
+                        done5 = _load_json(CW_EXPECT_DONE_PATH, [])
+                        if "aura5" not in done5:
+                            _save_json(CW_EXPECT_DONE_PATH, done5 + ["aura5"])
                     if hit:
                         # 真实羁绊列表和领奖页实测一致，记下来不再追（领奖后挪进 cw_bond_done.json）
                         reached = _load_json(CW_BOND_REACHED_PATH, {})
