@@ -720,7 +720,9 @@ class CurrencyWars:
                     self.equip_weapons()
                 self.check_festival_star_popup()
                 self.choose_protagonist()
+                self.reselect_protagonist_guide()
                 self.fix_bench_full()
+                self.fix_over_limit()
                 if self.handle_tea_break():
                     return True
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
@@ -1684,28 +1686,6 @@ class CurrencyWars:
                     break
         self.click_origin()
 
-    def fix_bench_full(self):
-        """「备战席已满，请出售角色或提升等级」时出战无效（多出来的角色没地方放，常见于开拓商店买到角色）。
-        卖掉备战席最便宜的角色，优先卖没有同名可凑升星的。"""
-        warn_crop = (600 / 1920, 510 / 1080, 720 / 1920, 50 / 1080)
-        for _ in range(3):
-            if not auto.find_element("备战席已满", "text", None, 1, include=True, crop=warn_crop):
-                return
-            self.click_origin()
-            time.sleep(0.5)
-            names = [c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name]
-            cands = [(names.count(c.name) > 1, c.money or 0, i) for i, c in enumerate(self.prepare_characters) if c.name]
-            if not cands:
-                log.warning("备战席已满，但没识别到可出售的角色")
-                return
-            _, _, idx = min(cands)
-            log.info(f"备战席已满，出售 {self.prepare_characters[idx].name}")
-            if self._sell_single_character(idx):
-                self.prepare_characters[idx] = CurrencyWarsCharacter(None, None)
-            time.sleep(1.5)
-            self.check_character_status()
-            self.deploy_and_optimize()
-
     def char_db(self) -> dict:
         if not hasattr(self, "_char_db"):
             self._char_db = _load_json(CW_CHAR_DB_PATH, {})
@@ -1810,6 +1790,53 @@ class CurrencyWars:
                 self.prepare_characters[i] = CurrencyWarsCharacter(None, None)
                 sold += 1
         if sold:
+            time.sleep(1)
+
+    def fix_bench_full(self):
+        """「备战席已满，请出售角色或提升等级」时出战无效（多出来的角色没地方放，常见于开拓商店买到角色）。
+        卖掉备战席最便宜的角色，优先卖没有同名可凑升星的。"""
+        warn_crop = (600 / 1920, 510 / 1080, 720 / 1920, 50 / 1080)
+        for _ in range(3):
+            if not auto.find_element("备战席已满", "text", None, 1, include=True, crop=warn_crop):
+                return
+            self.click_origin()
+            time.sleep(0.5)
+            names = [c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name]
+            cands = [(names.count(c.name) > 1, c.money or 0, i) for i, c in enumerate(self.prepare_characters) if c.name]
+            if not cands:
+                log.warning("备战席已满，但没识别到可出售的角色")
+                return
+            _, _, idx = min(cands)
+            log.info(f"备战席已满，出售 {self.prepare_characters[idx].name}")
+            if self._sell_single_character(idx):
+                self.prepare_characters[idx] = CurrencyWarsCharacter(None, None)
+            time.sleep(1.5)
+            self.check_character_status()
+            self.deploy_and_optimize()
+
+    def fix_over_limit(self):
+        """入画奇航有看不见的单位也占上场名额（如 2-7 出现 9/8），超上限时出战无效会卡死。
+        读面板「已上场/上限」，超了就把后台最便宜的角色挪回空的备战席。"""
+        limit_crop = (848.0 / 1920, 206.0 / 1080, 231.0 / 1920, 79.0 / 1080)
+        for _ in range(3):
+            text = auto.get_single_line_text(crop=limit_crop, blacklist=['等级提升', '金币不足']) or ""
+            m = re.search(r"(\d+)/(\d+)", text)
+            if not m:
+                return
+            used, cap = m.group(1), int(m.group(2))
+            if len(used) >= 2 and used[0] == "1" and int(used) > cap + 3:
+                used = used[1:]  # 前面的小人图标常被识别成「1」，如 i8/8 → 18/8
+            if int(used) <= cap:
+                return
+            log.info(f"上场人数超上限（{used}/{cap}），把一名后台角色移回备战席")
+            back = [(c.money or 0, i) for i, c in enumerate(self.backward_characters) if c.name]
+            empty = [i for i, c in enumerate(self.prepare_characters) if not c.name]
+            if not back or not empty:
+                log.warning("没有可移动的后台角色或备战席空位")
+                return
+            _, bi = min(back)
+            if not self.move_character(("backward", bi), ("prepare", empty[0])):
+                return
             time.sleep(1)
 
     def _bond_link_swap(self, assigned: dict, max_need: int = 2):
@@ -2482,12 +2509,54 @@ class CurrencyWars:
         log.warning("幕后茶歇未能回到备战界面")
         return True
 
+    def refresh_protagonist_cards(self, keep_money: int = 10, max_times: int = 6):
+        """主角光环卡每次刷新花 1 金币，每次选择最多 6 次。赛季指南有「累计刷新主角光环30次」任务，
+        钱够（刷完仍留 keep_money）就左右两张轮流刷新。"""
+        holding_crop = (1250 / 1920, 920 / 1080, 180 / 1920, 60 / 1080)
+        text = auto.get_single_line_text(crop=holding_crop)
+        m = re.search(r"\d+", text or "")
+        holding = int(m.group(0)) if m else 0
+        log.debug(f"主角光环界面持有金币：{text}")
+        times = max(0, min(max_times, holding - keep_money))
+        refresh_crops = [(400 / 1920, 750 / 1080, 160 / 1920, 45 / 1080), (1480 / 1920, 750 / 1080, 160 / 1920, 45 / 1080)]
+        for i in range(times):
+            auto.click_element(refresh_crops[i % 2], "crop")
+            time.sleep(1.2)
+        if times:
+            log.info(f"刷新主角光环 {times} 次")
+
     def choose_protagonist(self) -> bool:
         """入画奇航：出战按钮变成「选择主角」时，选一张主角光环并把前台第一个角色放进去。"""
         if not auto.click_element("选择主角", "text", None, 1, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True):
             return False
         log.info("选择主角光环")
         time.sleep(2)
+        return self.pick_protagonist_card()
+
+    def reselect_protagonist_guide(self) -> bool:
+        """入画奇航 2-1 的「提示：现在你可以重选主角光环」引导会挡住出战，必须走一遍重选主角：
+        点左上主角光环框 → 重选主角（花 1 次模式内重选次数）→ 确认 → 重新选光环。"""
+        if not auto.find_element("重选主角光", "text", None, 1, include=True, crop=(240 / 1920, 200 / 1080, 500 / 1920, 120 / 1080)):
+            return False
+        log.info("检测到重选主角光环引导")
+        for _ in range(2):  # 切前台后第一下常被吞
+            auto.click_element((40 / 1920, 120 / 1080, 170 / 1920, 80 / 1080), "crop")
+            time.sleep(1.5)
+            if auto.click_element("重选主角", "text", None, 2, include=True, crop=(560 / 1920, 680 / 1080, 400 / 1920, 60 / 1080)):
+                break
+        time.sleep(1.5)
+        auto.click_element("确认", "text", None, 3, crop=(1050 / 1920, 630 / 1080, 300 / 1920, 80 / 1080))
+        time.sleep(2.5)
+        if not auto.find_element("主角光环", "text", None, 3, include=True, crop=(700 / 1920, 60 / 1080, 520 / 1920, 60 / 1080)):
+            log.warning("重选主角光环：没进到选择界面")
+            auto.press_key("esc")
+            time.sleep(1.5)
+            return False
+        return self.pick_protagonist_card()
+
+    def pick_protagonist_card(self) -> bool:
+        """在「选择一个角色获得主角光环」界面选一张光环卡并把前台角色拖进去。"""
+        self.refresh_protagonist_cards()
         card_crops = [(140 / 1920, 300 / 1080, 440 / 1920, 360 / 1080), (1340 / 1920, 300 / 1080, 440 / 1920, 360 / 1080)]
         front_crops = [(770 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (876 / 1920, 580 / 1080, 70 / 1920, 70 / 1080),
                        (982 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (1086 / 1920, 580 / 1080, 70 / 1920, 70 / 1080)]
