@@ -3045,7 +3045,13 @@ class CurrencyWars:
                     break
 
             money = self.check_money()
+            if cfg.currencywars_strategy == "default" and self.current_level >= 9 and money < 60:
+                # 9 级已够放下主攻阵容（≤9 人）；升 10 级要花掉四五十金币，留着买角色、刷商店、升星更值
+                log.info("已到 9 级，金币留给买角色和刷商店，不再买经验")
+                break
             floor = self.interest_floor(money)
+            if not floor and cfg.currencywars_strategy == "default" and getattr(self, "_focus_short", False):
+                floor = min(money, 6)  # 主攻羁绊还差人：留几块钱下回合刷商店找
             if floor:
                 log.info(f"保留 {floor} 金币吃利息")
                 money -= floor
