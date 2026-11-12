@@ -2358,7 +2358,9 @@ class CurrencyWars:
         #             f"调整后区域结果: {self.zone_name_localization['forward']}={len(assigned['forward'])}, {self.zone_name_localization['backward']}={len(assigned['backward'])}, {self.zone_name_localization['prepare']}={len(assigned['prepare'])}, total used={used}/{limit}")
 
         if cfg.currencywars_strategy == "default":
-            self._bond_link_swap(assigned)
+            # 最后一个位面的羁绊列表就是通关结算用的，放宽到差 3 人也凑
+            last_plane = str(getattr(self, "current_stage", "") or "").startswith("3-")
+            self._bond_link_swap(assigned, max_need=3 if last_plane else 2)
 
         # 4️⃣ 填充空位
         for zone in ["forward", "backward"]:
