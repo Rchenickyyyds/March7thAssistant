@@ -2382,6 +2382,26 @@ class CurrencyWars:
                     return True
         return False
 
+    def check_hp(self):
+        """读备战界面右上角小队生命值，读不到返回 None。"""
+        text = auto.get_single_line_text(crop=(1415 / 1920, 50 / 1080, 100 / 1920, 50 / 1080)) or ""
+        m = re.search(r"\d+", text)
+        return int(m.group(0)) if m else None
+
+    def interest_floor(self, money: int) -> int:
+        """利息：每持有 10 金币回合结束 +1，最多 +5（50 金币）。前两个位面、血量还够时，
+        买经验不把钱花到当前 10 的整数倍以下（最多留 50）；第三位面或血量低时全花。"""
+        if cfg.currencywars_strategy != "default":
+            return 0
+        try:
+            plane = int(self.current_stage.split("-")[0])
+        except (ValueError, AttributeError):
+            plane = 1
+        hp = self.check_hp()
+        if plane >= 3 or (hp is not None and hp <= 40):
+            return 0
+        return min(50, money // 10 * 10)
+
     def buy_experience(self):
         """
         购买经验
@@ -2422,6 +2442,10 @@ class CurrencyWars:
                     break
 
             money = self.check_money()
+            floor = self.interest_floor(money)
+            if floor:
+                log.info(f"保留 {floor} 金币吃利息")
+                money -= floor
             if money >= 4:
                 required_buy_times = None
                 if cfg.currencywars_type == "normal":
