@@ -710,6 +710,7 @@ class CurrencyWars:
                 #     return
 
                 self.sell_characters()
+                self.trim_bench()
                 skip_equip_weapons = False
                 if cfg.currencywars_strategy == "aglaea" and not self.allow_equip_weapons:
                     skip_equip_weapons = True
@@ -1728,6 +1729,32 @@ class CurrencyWars:
         time.sleep(2)
         if bought:
             self.check_character_status()
+
+    def trim_bench(self, keep: int = 4):
+        """默认策略：备战席只留有用的——同名有第二只（凑升星）或对羁绊链路目标加分高的；
+        其余没上场的散件按价值从低到高卖掉，备战席最多留 keep 个，换回金币也不再堵「备战席已满」。"""
+        if cfg.currencywars_strategy != "default":
+            return
+        names = [c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name]
+        bench = [(i, c) for i, c in enumerate(self.prepare_characters) if c.name]
+        if len(bench) <= keep:
+            return
+        counts = self.owned_bond_counts()
+        cands = []
+        for i, c in bench:
+            if names.count(c.name) > 1 or self.bond_bonus(c.name, counts) >= 3:
+                continue
+            cands.append(((c.money or 0) + self.bond_bonus(c.name, counts), i))
+        cands.sort()
+        sold = 0
+        for _, i in cands[:len(bench) - keep]:
+            name = self.prepare_characters[i].name
+            if self._sell_single_character(i):
+                log.info(f"清理备战席：出售 {name}")
+                self.prepare_characters[i] = CurrencyWarsCharacter(None, None)
+                sold += 1
+        if sold:
+            time.sleep(1)
 
     def deploy_and_optimize(self):
         """
