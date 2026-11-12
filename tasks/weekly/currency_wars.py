@@ -13,6 +13,7 @@ import numpy as np
 import time
 import os
 import re
+import json
 
 
 class CurrencyWarsCharacter:
@@ -21,6 +22,26 @@ class CurrencyWarsCharacter:
         self.pos = pos  # 角色站位
         self.level = level  # 角色等级
         self.money = money  # 角色投资金额
+
+
+CW_PROTAGONIST_PATH = "./settings/cw_protagonist_picked.json"  # 选过主角光环的角色（预期收益：15 名不同角色）
+
+
+def _load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _save_json(path, data):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        log.debug(f"保存 {path} 失败: {e}")
 
 
 class CurrencyWars:
@@ -2198,10 +2219,21 @@ class CurrencyWars:
         front_crops = [(770 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (876 / 1920, 580 / 1080, 70 / 1920, 70 / 1080),
                        (982 / 1920, 580 / 1080, 70 / 1920, 70 / 1080), (1086 / 1920, 580 / 1080, 70 / 1920, 70 / 1080)]
         slot_crop = (920 / 1920, 420 / 1080, 80 / 1920, 80 / 1080)
+        # 预期收益「累计为15名不同的角色选择过主角光环」：没选过的优先，其次费用高（另有「主角光环给5费角色」）
+        picked = set(_load_json(CW_PROTAGONIST_PATH, []))
+        order = list(range(len(front_crops)))
+        fc = self.forward_characters
+        order.sort(key=lambda i: (fc[i].name in picked if i < len(fc) and fc[i].name else True,
+                                  -(fc[i].money if i < len(fc) and fc[i].name else 0)))
+        # 带「敌人难度+」的光环卡放最后
+        card_texts = ["".join(self._get_ocr_texts_in_crop(c)) for c in card_crops]
+        card_crops = [c for c, t in zip(card_crops, card_texts) if "敌人难度" not in t] + \
+                     [c for c, t in zip(card_crops, card_texts) if "敌人难度" in t]
         for card in card_crops:
             auto.click_element(card, "crop")
             time.sleep(1)
-            for front in front_crops:
+            for fi in order:
+                front = front_crops[fi]
                 src = auto.find_element(front, "crop")
                 dst = auto.find_element(slot_crop, "crop")
                 if not src or not dst:
@@ -2213,6 +2245,10 @@ class CurrencyWars:
                 auto.mouse_up()
                 time.sleep(1)
                 if not auto.find_element("尚未选择", "text", include=True, crop=(700 / 1920, 860 / 1080, 520 / 1920, 60 / 1080)):
+                    if fi < len(fc) and fc[fi].name:
+                        log.info(f"主角光环给 {fc[fi].name}")
+                        if fc[fi].name not in picked:
+                            _save_json(CW_PROTAGONIST_PATH, sorted(picked | {fc[fi].name}))
                     auto.click_element("确认", "text", None, 3, crop=(750 / 1920, 920 / 1080, 420 / 1920, 70 / 1080))
                     time.sleep(2)
                     return True
