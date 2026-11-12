@@ -24,6 +24,14 @@ class CurrencyWarsCharacter:
         self.money = money  # 角色投资金额
 
 
+# 入画奇航「羁绊链路」：成功通关时羁绊列表里激活到这些层数各给 20 星琼（不含投资大师限定）
+BOND_LINK_TARGETS = {
+    "星核猎手": [3, 5], "黄金大饭店": [3, 4], "梦境交织": [2, 4], "星间旅人": [4, 6], "小小巨人": [3, 5], "少女乐队": [4],
+    "连击": [4, 6], "追击": [5, 7], "持续伤害": [5, 7], "群攻": [4, 6], "击破": [4, 6], "欢愉": [5, 6],
+    "反击": [2, 4], "召唤": [2, 4], "能量": [2, 4], "治疗": [4, 6], "守护": [3],
+}
+CW_CHAR_DB_PATH = "./settings/cw_characters.json"  # 角色库：名字 → 费用/站位/羁绊，跨局累积
+CW_BOND_DONE_PATH = "./settings/cw_bond_done.json"  # 已领的羁绊链路 {羁绊: [层数,...]}
 CW_PROTAGONIST_PATH = "./settings/cw_protagonist_picked.json"  # 选过主角光环的角色（预期收益：15 名不同角色）
 
 
@@ -679,6 +687,7 @@ class CurrencyWars:
                 elif cfg.currencywars_strategy == "default":
                     # 默认策略：商店里出现已拥有的角色就买，凑三合一升星
                     self.buy_owned_duplicates()
+                    self.buy_bond_targets()
 
                 self.buy_trailblaze_shop()
 
@@ -1640,6 +1649,86 @@ class CurrencyWars:
             self.check_character_status()
             self.deploy_and_optimize()
 
+    def char_db(self) -> dict:
+        if not hasattr(self, "_char_db"):
+            self._char_db = _load_json(CW_CHAR_DB_PATH, {})
+        return self._char_db
+
+    def bond_targets(self) -> dict:
+        """还没领的羁绊链路目标 {羁绊: 下一个要达到的层数}。"""
+        done = _load_json(CW_BOND_DONE_PATH, {})
+        targets = {}
+        for bond, tiers in BOND_LINK_TARGETS.items():
+            left = [t for t in tiers if t not in done.get(bond, [])]
+            if left:
+                targets[bond] = min(left)
+        return targets
+
+    def owned_bond_counts(self) -> dict:
+        """按不同角色名统计已拥有角色（前台/后台/备战席）的羁绊数量。"""
+        counts = {}
+        names = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+        for name in names:
+            for bond in self.char_db().get(name, {}).get("bonds", []):
+                counts[bond] = counts.get(bond, 0) + 1
+        return counts
+
+    def bond_bonus(self, name: Optional[str], counts: Optional[dict] = None) -> int:
+        """羁绊链路加权：角色带有未完成目标羁绊时加分，已拥有同羁绊越多、离目标越近分越高。"""
+        if not name or cfg.currencywars_strategy != "default":
+            return 0
+        counts = self.owned_bond_counts() if counts is None else counts
+        targets = self.bond_targets()
+        bonus = 0
+        for bond in self.char_db().get(name, {}).get("bonds", []):
+            if bond in targets:
+                have = counts.get(bond, 0)
+                bonus += 3 if have + 2 >= targets[bond] else (2 if have >= 2 else 1)
+        return bonus
+
+    def read_char_bonds(self) -> list:
+        """角色信息面板名字下方那行羁绊标签。"""
+        texts = self._get_ocr_texts_in_crop((1400 / 1920, 295 / 1080, 470 / 1920, 50 / 1080))
+        return [t.strip() for t in texts if 2 <= len(t.strip()) <= 6]
+
+    def buy_bond_targets(self, keep_money: int = 0):
+        """默认策略：商店里有带「未完成羁绊链路目标」羁绊、且还没拥有的角色，钱在利息线以上就买。"""
+        if cfg.currencywars_strategy != "default":
+            return
+        if sum(1 for c in self.prepare_characters if c.name) >= len(self.prepare_pos) - 1:
+            return
+        counts = self.owned_bond_counts()
+        owned = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+        money = self.check_money()
+        budget = money - max(keep_money, self.interest_floor(money))
+        if budget < 1:
+            return
+        shop_button_crop = (1591 / 1920, 958 / 1080, 66 / 1920, 46 / 1080)
+        shop_crop = (344 / 1920, 19 / 1080, 1370 / 1920, 526 / 1080)
+        auto.click_element(shop_button_crop, "crop")
+        time.sleep(2)
+        bought = False
+        texts = self._get_ocr_texts_in_crop(shop_crop)
+        cands = []
+        for name, info in self.char_db().items():
+            if name in owned or name not in texts:
+                continue
+            score = self.bond_bonus(name, counts)
+            cost = info.get("money", 9)
+            if score >= 3 and cost <= budget:  # 和 trim_bench 的保留线一致，免得买了又卖
+                cands.append((-score, cost, name))
+        for _, cost, name in sorted(cands)[:2]:
+            if cost > budget:
+                continue
+            log.info(f"羁绊链路：购买 {name}（羁绊 {'/'.join(self.char_db()[name].get('bonds', []))}）")
+            if self.try_buy_character(name):
+                budget -= cost
+                bought = True
+        auto.click_element(shop_button_crop, "crop")
+        time.sleep(2)
+        if bought:
+            self.check_character_status()
+
     def deploy_and_optimize(self):
         """
         部署并自动调整最优站位：
@@ -1678,11 +1767,16 @@ class CurrencyWars:
                 return "forward"
             return item["c"].pos
 
+        bond_counts = self.owned_bond_counts()
+
+        def bonus_of(item):
+            return self.bond_bonus(item["c"].name, bond_counts)
+
         def _build_assignment(forced_forward_names=None):
             forced_forward_names = forced_forward_names or set()
 
             forward_candidates = [item for item in source_chars if _get_effective_pos(item, forced_forward_names) in ("forward", "all")]
-            forward_candidates.sort(key=lambda x: (-x["c"].money, 0 if _get_effective_pos(x, forced_forward_names) == "forward" else 1))
+            forward_candidates.sort(key=lambda x: (-(x["c"].money + bonus_of(x)), 0 if _get_effective_pos(x, forced_forward_names) == "forward" else 1))
             top_forward: list[dict] = []
             top_forward_names: set[str] = set()
             duplicates_forward: list[dict] = []
@@ -1696,7 +1790,7 @@ class CurrencyWars:
 
             pos_priority = {"forward": 0, "backward": 1, "all": 2}
             remaining_pool = [item for item in source_chars if item not in top_forward and item not in duplicates_forward]
-            remaining_pool.sort(key=lambda x: (-x["c"].money, pos_priority.get(_get_effective_pos(x, forced_forward_names), 3)))
+            remaining_pool.sort(key=lambda x: (-(x["c"].money + bonus_of(x)), pos_priority.get(_get_effective_pos(x, forced_forward_names), 3)))
 
             remaining_unique: list[dict] = []
             remaining_names: set[str] = set()
@@ -2787,6 +2881,14 @@ class CurrencyWars:
                 log.error(f"无法识别角色 {name} 的费用信息，默认为 1")
                 money = "1"
             log.info(f"识别到角色：{name}，站位：{self.pos_name_localization[cpos]}，费用：{money}")
+            try:
+                bonds = self.read_char_bonds()
+                if bonds:
+                    self.char_db()[name] = {"money": int(money), "pos": cpos, "bonds": bonds}
+                    _save_json(CW_CHAR_DB_PATH, self.char_db())
+                    log.debug(f"角色 {name} 羁绊：{bonds}")
+            except Exception as e:
+                log.debug(f"读取角色羁绊失败: {e}")
 
             if cfg.currencywars_strategy == "aglaea":
                 remembrance_trailblazer_name = self.get_remembrance_trailblazer_name()
