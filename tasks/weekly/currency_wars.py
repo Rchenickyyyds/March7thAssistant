@@ -2457,7 +2457,11 @@ class CurrencyWars:
                         # 每次购买消耗4货币并提供4经验
                         required_buy_times = (need_exp + 3) // 4
                         affordable_buy_times = money // 4
-                        if affordable_buy_times < required_buy_times:
+                        if affordable_buy_times < required_buy_times and cfg.currencywars_strategy == "default" and affordable_buy_times > 0:
+                            # 经验会保留；利息线以上的钱不花就是闲置（曾攒到 106 金币没用），先买能买的
+                            log.info(f"利息线以上可买经验 {affordable_buy_times} 次（升级需 {required_buy_times} 次），先买")
+                            required_buy_times = affordable_buy_times
+                        elif affordable_buy_times < required_buy_times:
                             log.info(
                                 f"当前经验 {current_exp}，距离升级还需 {need_exp} 经验，"
                                 f"需购买 {required_buy_times} 次(可购买 {affordable_buy_times} 次)，货币数量 {money} 不足以购买到升级"
