@@ -1843,7 +1843,9 @@ class CurrencyWars:
         db = self.char_db()
         owned = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
         prev = getattr(self, "_bond_focus", None) or {}
-        cache_key = (frozenset(owned), tuple(sorted(targets.items())), getattr(self, "_bond_env", None))
+        # 每个目标的分值随位面提高：后期金币多，值得再加一个目标去凑（第四局只选了 1 个目标，2-5 凑齐后 50 金币闲置到结束）
+        weight = 16 + 4 * (self._plane() - 1)
+        cache_key = (frozenset(owned), tuple(sorted(targets.items())), getattr(self, "_bond_env", None), weight)
         if getattr(self, "_bond_focus_key", None) == cache_key and getattr(self, "_bond_focus", None) is not None:
             return self._bond_focus
         self._bond_focus_key = cache_key
@@ -1888,7 +1890,7 @@ class CurrencyWars:
                     continue
                 chosen, cost, miss = res
                 slack = sum(4 if len(pools[b]) == targets[b] else 2 if len(pools[b]) == targets[b] + 1 else 0 for b in bonds)
-                score = 12 * k - cost - 1.5 * miss - slack + 4 * len(set(bonds) & set(prev))
+                score = weight * k - cost - 1.5 * miss - slack + 4 * len(set(bonds) & set(prev))
                 if getattr(self, "_bond_env", None) in bonds:
                     score += 6  # 投资环境/策略选了这个羁绊的加成
                 if best is None or score > best[0]:
@@ -2016,7 +2018,8 @@ class CurrencyWars:
                     for b in db[name].get("bonds", []):
                         counts[b] = counts.get(b, 0) + 1
             miss = focus_missing(owned)
-            if refreshed >= max_refresh or not (1 <= miss <= 2) or budget < 2 + 2:
+            # 二位面差 1~3 人、三位面只要还差人就刷（三位面不用留利息，钱不花也是浪费）
+            if refreshed >= max_refresh or miss < 1 or miss > (3 if plane < 3 else 9) or budget < 2 + 2:
                 break
             auto.press_key('d')
             refreshed += 1
