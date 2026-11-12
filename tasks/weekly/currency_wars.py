@@ -2302,7 +2302,9 @@ class CurrencyWars:
         """入画奇航：「幕后茶歇」节点没有出战按钮。进去和奇遇伙伴「聊一聊」（赛季指南有对应任务），
         选对话里的选项并确认，领完茶歇奖励后回到备战界面。"""
         if not auto.click_element("幕后茶歇", "text", None, 1, crop=(1580 / 1920, 680 / 1080, 340 / 1920, 120 / 1080), include=True):
-            return False
+            # 茶歇中途切回了备战界面时，入口是右上角「返回幕后茶歇」
+            if not auto.click_element("返回幕后茶歇", "text", None, 1, crop=(1560 / 1920, 30 / 1080, 360 / 1920, 80 / 1080), include=True):
+                return False
         log.info("检测到幕后茶歇节点")
         time.sleep(3)
         # 首次进入有教学气泡，第一次点击可能只会关掉气泡
@@ -2317,12 +2319,26 @@ class CurrencyWars:
             if auto.find_element("./assets/images/screen/currency_wars/exit.png", "image", 0.9, crop=exit_crop):
                 log.info("幕后茶歇完成")
                 return True
+            # 点到伙伴头像或选项里带下划线的角色名会弹角色详情（左上是角色详情或事件名，底部有「角色详情」按钮），ESC 关不掉，点右上角 X
+            if (auto.find_element("角色详情", "text", None, 1, crop=(90 / 1920, 30 / 1080, 220 / 1920, 45 / 1080), include=True)
+                    or auto.find_element("角色详情", "text", None, 1, crop=(760 / 1920, 920 / 1080, 400 / 1920, 80 / 1080), include=True)):
+                log.info("幕后茶歇：误入角色详情，返回")
+                auto.click_element((1830 / 1920, 35 / 1080, 70 / 1920, 60 / 1080), "crop")
+                time.sleep(2)
+                continue
             # 选项框在右侧，最后一项是「返回」；选中返回上面那一项后右侧出现「确认」
             if not option_confirmed:
                 back = auto.find_element("返回", "text", None, 1, crop=(1000 / 1920, 300 / 1080, 700 / 1920, 600 / 1080))
                 if back:
-                    h = auto.screenshot.height / getattr(auto, "screenshot_scale_factor", 1)
-                    auto.click_element_with_pos(back, offset=(0, -int(0.16 * h)))
+                    # 点选项框右侧的标题条：正文里的角色名带下划线，点到会弹角色详情
+                    (bx1, by1), (bx2, by2) = back
+                    # back 来自带 crop 的查找，auto.screenshot 只是裁剪图；重新截全图拿窗口位置和尺寸
+                    auto.take_screenshot()
+                    scale = getattr(auto, "screenshot_scale_factor", 1) or 1
+                    left, top = auto.screenshot_pos[0], auto.screenshot_pos[1]
+                    h = auto.screenshot.height / scale
+                    y_rel = ((by1 + by2) / 2 - top) / h - 0.18
+                    auto.click_element((0.85, y_rel - 0.01, 0.06, 0.02), "crop")
                     time.sleep(1)
                     if auto.click_element("确认", "text", None, 3, crop=(1650 / 1920, 300 / 1080, 270 / 1920, 600 / 1080)):
                         log.info("幕后茶歇：已选择伙伴选项")
