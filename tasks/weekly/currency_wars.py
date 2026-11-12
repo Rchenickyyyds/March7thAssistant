@@ -638,7 +638,7 @@ class CurrencyWars:
         exit_crop = (3.0 / 1920, 37.0 / 1080, 104.0 / 1920, 57.0 / 1080)
         if auto.find_element("./assets/images/screen/currency_wars/exit.png", "image", 0.9, crop=exit_crop):
             start_time = time.monotonic()
-            while time.monotonic() - start_time < 7:
+            while time.monotonic() - start_time < (4 if cfg.currencywars_strategy == "default" else 7):
                 self.click_origin()
                 time.sleep(0.1)
             if auto.find_element("./assets/images/screen/currency_wars/exit.png", "image", 0.9, crop=exit_crop):
