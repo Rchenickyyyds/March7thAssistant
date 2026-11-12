@@ -757,7 +757,24 @@ class CurrencyWars:
                     self._last_bond_list = self.read_bond_list()
                     if self._last_bond_list:
                         tg = self.bond_targets()
-                        log.info("羁绊列表：" + " ".join(f"{b}{n}" + (f"/{tg[b]}" if b in tg else "") for b, n in self._last_bond_list.items()))
+                        log.info("羁绊列表：" + " ".join(f"{b}{n}" + (f"/{tg[b]}" if b in tg else "") for b, n in self._last_bond_list.items())
+                                 + ("（没对上：" + " ".join(getattr(self, "_bond_list_unknown", [])) + "）" if getattr(self, "_bond_list_unknown", None) else ""))
+                        self._bond_list_unknown = []
+                        # 和按角色库推算的上场羁绊对一下，对不上就把上场名单打出来（找跟踪错位的原因）
+                        fielded = [c.name for c in self.forward_characters + self.backward_characters if c.name]
+                        est = {}
+                        for n in set(fielded):
+                            for b in self.char_db().get(n, {}).get("bonds", []):
+                                est[b] = est.get(b, 0) + 1
+                        diff = [f"{b} 推算{est.get(b, 0)}/实际{n}" for b, n in self._last_bond_list.items() if est.get(b, 0) != n]
+                        if diff:
+                            log.warning("羁绊对不上：" + "、".join(diff) + "；上场：" + " ".join(fielded) + "；备战席：" + " ".join(c.name for c in self.prepare_characters if c.name))
+                            if any(est.get(b, 0) > n for b, n in self._last_bond_list.items()):
+                                # 实际比推算少 = 记录的上场名单和游戏里不一致（拖动没成功/被游戏挪了位置），下回合整场重新识别
+                                # （实际比推算多是正常的：共舞、从师、星徽都会额外加羁绊）
+                                log.warning("上场名单可能错位，下回合重新识别前后台")
+                                self.forward_characters = []
+                                self.backward_characters = []
                 log.info(f"准备阶段用时 {time.monotonic() - _t0:.0f}s（{' '.join(_marks)}），出战")
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
                 time.sleep(1)
@@ -1685,33 +1702,59 @@ class CurrencyWars:
         return moved
 
     def read_bond_list(self) -> dict:
-        """读备战界面左侧的羁绊列表 {羁绊: 人数}（游戏里的真实计数，含星徽等加成；只读得到当前可见的几行）。"""
+        """读备战界面左侧的羁绊列表 {羁绊: 人数}（游戏里的真实计数，含星徽等加成；只读得到当前可见的几行）。
+        人数 = 图标左下角的角标数字。已激活的羁绊名字下面是各档门槛（如 2/4/6/9），不是人数；
+        未激活的是「人数/下一档」。角标没识别到时单独放大再认一次，还认不到就不采信这一行。"""
         try:
-            auto.take_screenshot(crop=(0, 190 / 1080, 290 / 1920, 600 / 1080))
-            auto.perform_ocr()
-            h = auto.screenshot.height
-            items = sorted((box[0][1], box[0][0], text.strip()) for box, (text, _c) in (auto.ocr_result or []) if text.strip())
+            from module.ocr import ocr as _ocr
+            from PIL import Image
+            auto.take_screenshot()
+            full = auto.screenshot.convert("RGB")
+            W, H = full.size
+            x0, y0 = 0, int(190 / 1080 * H)
+            crop = full.crop((x0, y0, int(290 / 1920 * W), int(790 / 1080 * H)))
+            result = _ocr.recognize_multi_lines(np.array(crop)) or []
+            items = sorted((box[0][1], box[0][0], text.strip()) for box, (text, _c) in result if text.strip())
         except Exception as e:
             log.debug(f"读取羁绊列表失败: {e}")
             return {}
         known = set(BOND_LINK_TARGETS) | {"千星商会"}
+        sy = H / 1080
         res = {}
-        for y, x, t in items:
+        import difflib
+        unknown = []
+        for y, x, t0 in items:
+            t = t0
             if t not in known:
-                continue
-            count = None
-            for yy, xx, tt in items:
-                if 0 < yy - y < h * 0.09 and re.match(r"^\d+(/\d+)+$", tt):
-                    nums = [int(v) for v in tt.split("/")]
-                    if len(nums) == 2:
-                        count = nums[0]  # 未激活：人数/下一档
-                    else:
-                        # 已激活：只列各档门槛，人数看左边图标角标
-                        badge = [int(t2) for y2, x2, t2 in items if abs(y2 - y) < h * 0.07 and x2 < x and t2.isdigit()]
-                        count = badge[0] if badge else nums[0]
-                    break
-            if count is not None:
+                # 名字被认错一两个字时按相似度对回去（第五局幻月游戏有 4 人却没出现在读数里）
+                close = difflib.get_close_matches(t, known, 1, 0.6) if 2 <= len(t) <= 6 and not re.search(r"[\d/]", t) else []
+                if not close:
+                    if 2 <= len(t) <= 6 and not re.search(r"[\d/]", t) and x > 60 * sy:
+                        unknown.append(t)
+                    continue
+                t = close[0]
+            badge = [int(t2) for y2, x2, t2 in items if 15 * sy < y2 - y < 60 * sy and x2 < x and t2.isdigit() and len(t2) <= 2]
+            count = badge[0] if badge else None
+            if count is None:
+                try:
+                    cx, cy, half = x0 + x - 22 * sy, y0 + y + 46 * sy, 18 * sy
+                    b = full.crop((int(cx - half), int(cy - half), int(cx + half), int(cy + half)))
+                    b = b.resize((b.width * 4, b.height * 4), Image.LANCZOS)
+                    r = _ocr.recognize_single_line(np.array(b))
+                    if r and str(r[0]).strip().isdigit():
+                        count = int(str(r[0]).strip())
+                except Exception as e:
+                    log.debug(f"读取羁绊角标失败: {e}")
+            if count is None:
+                for yy, xx, tt in items:
+                    if 15 * sy < yy - y < 60 * sy and re.match(r"^\d+/\d+$", tt):
+                        count = int(tt.split("/")[0])  # 两个数：按「人数/下一档」读
+                        break
+            if count is not None and count <= 12:
                 res[t] = count
+        if unknown:
+            log.debug("羁绊列表里没对上的名字：" + " ".join(unknown))
+            self._bond_list_unknown = unknown
         return res
 
     def equip_weapons(self):
