@@ -689,10 +689,13 @@ class CurrencyWars:
                     self.equip_weapons()
                 self.check_festival_star_popup()
                 self.choose_protagonist()
+                self.fix_bench_full()
                 if self.handle_tea_break():
                     return True
                 auto.click_element(('出战', '跳过'), 'text', None, 10, crop=(1740 / 1920, 709 / 1080, 177 / 1920, 80 / 1080), include=True)
-                time.sleep(2)
+                time.sleep(1)
+                self.fix_bench_full()  # 提示是点出战后才冒出来的
+                time.sleep(1)
                 if auto.click_element("本局不再提示", "text", crop=(905 / 1920, 571 / 1080, 171 / 1920, 50 / 1080)):
                     time.sleep(1)
                 auto.click_element("./assets/images/zh_CN/base/confirm.png", "image", 0.9)
@@ -1593,6 +1596,28 @@ class CurrencyWars:
                 else:
                     break
         self.click_origin()
+
+    def fix_bench_full(self):
+        """「备战席已满，请出售角色或提升等级」时出战无效（多出来的角色没地方放，常见于开拓商店买到角色）。
+        卖掉备战席最便宜的角色，优先卖没有同名可凑升星的。"""
+        warn_crop = (600 / 1920, 510 / 1080, 720 / 1920, 50 / 1080)
+        for _ in range(3):
+            if not auto.find_element("备战席已满", "text", None, 1, include=True, crop=warn_crop):
+                return
+            self.click_origin()
+            time.sleep(0.5)
+            names = [c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name]
+            cands = [(names.count(c.name) > 1, c.money or 0, i) for i, c in enumerate(self.prepare_characters) if c.name]
+            if not cands:
+                log.warning("备战席已满，但没识别到可出售的角色")
+                return
+            _, _, idx = min(cands)
+            log.info(f"备战席已满，出售 {self.prepare_characters[idx].name}")
+            if self._sell_single_character(idx):
+                self.prepare_characters[idx] = CurrencyWarsCharacter(None, None)
+            time.sleep(1.5)
+            self.check_character_status()
+            self.deploy_and_optimize()
 
     def deploy_and_optimize(self):
         """
