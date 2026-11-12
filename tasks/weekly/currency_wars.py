@@ -26,12 +26,16 @@ class CurrencyWarsCharacter:
 
 # 入画奇航「羁绊链路」：成功通关时羁绊列表里激活到这些层数各给 20 星琼（不含投资大师限定）
 BOND_LINK_TARGETS = {
+    # 阵营（千星商会按三星人数算，不在这里）
+    "幻月游戏": [5, 7], "奇兽花园": [5, 7], "仙舟舰队": [4, 6], "开拓银轨": [4, 6], "云上五骁": [3, 5],
     "星核猎手": [3, 5], "黄金大饭店": [3, 4], "梦境交织": [2, 4], "星间旅人": [4, 6], "小小巨人": [3, 5], "少女乐队": [4],
+    # 流派
     "连击": [4, 6], "追击": [5, 7], "持续伤害": [5, 7], "群攻": [4, 6], "击破": [4, 6], "欢愉": [5, 6],
     "反击": [2, 4], "召唤": [2, 4], "能量": [2, 4], "治疗": [4, 6], "守护": [3],
 }
 CW_CHAR_DB_PATH = "./settings/cw_characters.json"  # 角色库：名字 → 费用/站位/羁绊，跨局累积
 CW_BOND_DONE_PATH = "./settings/cw_bond_done.json"  # 已领的羁绊链路 {羁绊: [层数,...]}
+CW_BOND_REACHED_PATH = "./settings/cw_bond_reached.json"  # 通关时游戏内羁绊列表已达成、还没去领的 {羁绊: [层数,...]}，不再追
 CW_PROTAGONIST_PATH = "./settings/cw_protagonist_picked.json"  # 选过主角光环的角色（预期收益：15 名不同角色）
 
 
@@ -432,6 +436,13 @@ class CurrencyWars:
             raise RuntimeError("货币战争启动失败：未确认进入对局")
 
         log.info("开始对局")
+        self._aura_char = None
+        self._focus_short = False
+        self._last_bond_list = {}
+        self._box_fails = 0
+        self._bond_env = None
+        self._equip_given = {}
+        self._bond_focus = None
         return True
 
     def wait_for_war_start(self) -> bool:
@@ -697,10 +708,11 @@ class CurrencyWars:
 
                 elif cfg.currencywars_strategy == "default":
                     # 默认策略：商店里出现已拥有的角色就买，凑三合一升星
-                    self.buy_owned_duplicates()
+                    # 买主攻羁绊角色和重复卡合并在一次开店里（原来每回合开关商店两次）
                     self.buy_bond_targets()
 
                 self.buy_trailblaze_shop()
+                _mark("商店")
 
                 skip_buy_experience = False
                 if cfg.currencywars_strategy == "aglaea" and not self.allow_buy_experience:
@@ -1541,6 +1553,11 @@ class CurrencyWars:
         """
         log.info("出售多余角色")
         any_sold = False
+        bond_counts = self.owned_bond_counts()
+
+        def keep(char):
+            # 主攻羁绊的角色留着等上场名额，不当散件卖
+            return self.bond_bonus(char.name, bond_counts) >= 3
 
         forward_names = set()
         forward_count = 0
@@ -1551,7 +1568,7 @@ class CurrencyWars:
 
         if forward_count == len(self.forward_pos):
             for idx, char in enumerate(self.prepare_characters):
-                if char.name and char.pos == "forward" and char.name not in forward_names:
+                if char.name and char.pos == "forward" and char.name not in forward_names and not keep(char):
                     log.info(f"出售角色 {char.name}")
                     if self._sell_single_character(idx):
                         # 出售成功，清空该位置的角色信息
@@ -1566,7 +1583,7 @@ class CurrencyWars:
                 backward_count += 1
         if backward_count == len(self.backward_pos):
             for idx, char in enumerate(self.prepare_characters):
-                if char.name and char.pos == "backward" and char.name not in backward_names:
+                if char.name and char.pos == "backward" and char.name not in backward_names and not keep(char):
                     log.info(f"出售角色 {char.name}")
                     if self._sell_single_character(idx):
                         # 出售成功，清空该位置的角色信息
@@ -1575,7 +1592,7 @@ class CurrencyWars:
 
         if forward_count == len(self.forward_pos) and backward_count == len(self.backward_pos):
             for idx, char in enumerate(self.prepare_characters):
-                if char.name and char.pos == "all" and char.name not in forward_names and char.name not in backward_names:
+                if char.name and char.pos == "all" and char.name not in forward_names and char.name not in backward_names and not keep(char):
                     log.info(f"出售角色 {char.name}")
                     if self._sell_single_character(idx):
                         # 出售成功，清空该位置的角色信息
@@ -1746,9 +1763,10 @@ class CurrencyWars:
     def bond_targets(self) -> dict:
         """还没领的羁绊链路目标 {羁绊: 下一个要达到的层数}。"""
         done = _load_json(CW_BOND_DONE_PATH, {})
+        reached = _load_json(CW_BOND_REACHED_PATH, {})
         targets = {}
         for bond, tiers in BOND_LINK_TARGETS.items():
-            left = [t for t in tiers if t not in done.get(bond, [])]
+            left = [t for t in tiers if t not in done.get(bond, []) and t not in reached.get(bond, [])]
             if left:
                 targets[bond] = min(left)
         return targets
@@ -1762,17 +1780,103 @@ class CurrencyWars:
                 counts[bond] = counts.get(bond, 0) + 1
         return counts
 
+    def _plane(self) -> int:
+        try:
+            return int(str(self.current_stage).split("-")[0])
+        except (ValueError, AttributeError):
+            return 1
+
+    def bond_focus(self) -> dict:
+        """本局主攻的羁绊链路目标 {羁绊: 层数}（最多 3 个）和对应的一套阵容 self._bond_team。
+        羁绊链路要上场 3~7 个不同角色，什么都沾一点只能每样叠两三层；很多角色同时带两三个目标羁绊，
+        所以按「一套 ≤9 人的阵容能同时凑齐几个目标」来选：每个目标 +12 分，还缺的角色每点费用 -1、
+        每缺一人 -1.5，角色池没余量再扣分；已选的目标有 4 分粘性，免得每回合换方向。"""
+        from itertools import combinations
+        targets = self.bond_targets()
+        db = self.char_db()
+        owned = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+        prev = getattr(self, "_bond_focus", None) or {}
+        cache_key = (frozenset(owned), tuple(sorted(targets.items())), getattr(self, "_bond_env", None))
+        if getattr(self, "_bond_focus_key", None) == cache_key and getattr(self, "_bond_focus", None) is not None:
+            return self._bond_focus
+        self._bond_focus_key = cache_key
+        pools = {}
+        for b, t in targets.items():
+            pool = [n for n, info in db.items() if b in info.get("bonds", [])]
+            if len(pool) >= t:
+                pools[b] = pool
+        cap = 9
+
+        def plan(bonds):
+            left = {b: targets[b] for b in bonds}
+            names = {n for b in bonds for n in pools[b]}
+            chosen = []
+            while any(v > 0 for v in left.values()):
+                best = None
+                for n in names:
+                    if n in chosen:
+                        continue
+                    cover = sum(1 for b in db[n].get("bonds", []) if left.get(b, 0) > 0)
+                    if not cover:
+                        continue
+                    cost = 0 if n in owned else db[n].get("money", 9)
+                    key = (cost / cover, cost, n)
+                    if best is None or key < best:
+                        best = key
+                if best is None or len(chosen) >= cap:
+                    return None
+                chosen.append(best[2])
+                for b in db[best[2]].get("bonds", []):
+                    if left.get(b, 0) > 0:
+                        left[b] -= 1
+            miss = [db[n].get("money", 9) for n in chosen if n not in owned]
+            return chosen, sum(miss), len(miss)
+
+        best = None
+        cands = sorted(pools)
+        for k in (1, 2, 3):
+            for bonds in combinations(cands, k):
+                res = plan(bonds)
+                if not res:
+                    continue
+                chosen, cost, miss = res
+                slack = sum(4 if len(pools[b]) == targets[b] else 2 if len(pools[b]) == targets[b] + 1 else 0 for b in bonds)
+                score = 12 * k - cost - 1.5 * miss - slack + 4 * len(set(bonds) & set(prev))
+                if getattr(self, "_bond_env", None) in bonds:
+                    score += 6  # 投资环境/策略选了这个羁绊的加成
+                if best is None or score > best[0]:
+                    best = (score, bonds, chosen)
+        if not best:
+            self._bond_focus, self._bond_team = {}, set()
+            return {}
+        focus = {b: targets[b] for b in best[1]}
+        team = set(best[2])
+        if focus != prev:
+            lack = [n for n in best[2] if n not in owned]
+            log.info("羁绊链路：本局主攻 " + "、".join(f"{t}{b}" for b, t in focus.items()) + (f"（还缺 {'、'.join(lack)}）" if lack else "（人齐了）"))
+        self._bond_focus, self._bond_team = focus, team
+        return focus
+
     def bond_bonus(self, name: Optional[str], counts: Optional[dict] = None) -> int:
-        """羁绊链路加权：角色带有未完成目标羁绊时加分，已拥有同羁绊越多、离目标越近分越高。"""
+        """羁绊链路加权：在主攻阵容里 +6；带主攻羁绊且该羁绊人还没凑够（可当替补）+3；
+        带其他目标羁绊、且这一个就能凑齐时 +3；其余不加。"""
         if not name or cfg.currencywars_strategy != "default":
             return 0
         counts = self.owned_bond_counts() if counts is None else counts
         targets = self.bond_targets()
+        # 每次都按当前拥有的角色重算（有缓存）：刚买到/补给拿到的角色要立刻进阵容，不然会被当散件卖掉
+        focus = self.bond_focus()
+        if name in getattr(self, "_bond_team", ()):
+            return 6
+        real = getattr(self, "_last_bond_list", None) or {}
         bonus = 0
         for bond in self.char_db().get(name, {}).get("bonds", []):
-            if bond in targets:
-                have = counts.get(bond, 0)
-                bonus += 3 if have + 2 >= targets[bond] else (2 if have >= 2 else 1)
+            if bond in focus:
+                # 人还没凑够，或者游戏里的真实计数还不够（推算和实际对不上时以实际为准）
+                if counts.get(bond, 0) < focus[bond] or real.get(bond, focus[bond]) < focus[bond]:
+                    bonus = max(bonus, 3)
+            elif bond in targets and counts.get(bond, 0) + 1 >= targets[bond]:
+                bonus = max(bonus, 3)
         return bonus
 
     def read_char_bonds(self) -> list:
@@ -1781,41 +1885,93 @@ class CurrencyWars:
         return [t.strip() for t in texts if 2 <= len(t.strip()) <= 6]
 
     def buy_bond_targets(self, keep_money: int = 0):
-        """默认策略：商店里有带「未完成羁绊链路目标」羁绊、且还没拥有的角色，钱在利息线以上就买。"""
+        """默认策略：商店里有带主攻羁绊（或单个就能凑齐某目标）、且还没拥有的角色就买。
+        第一位面守利息线；第二位面可花掉 20 利息；第三位面全花。
+        第二位面起主攻只差 1~2 人时按 d 刷新商店找（每次 2 金币）。"""
         if cfg.currencywars_strategy != "default":
             return
         if sum(1 for c in self.prepare_characters if c.name) >= len(self.prepare_pos) - 1:
-            return
-        counts = self.owned_bond_counts()
-        owned = {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+            self.trim_bench(keep=len(self.prepare_pos) - 2)
+            if sum(1 for c in self.prepare_characters if c.name) >= len(self.prepare_pos) - 1:
+                return
+        focus = self.bond_focus()
+        db = self.char_db()
+        plane = self._plane()
         money = self.check_money()
-        budget = money - max(keep_money, self.interest_floor(money))
+        floor = self.interest_floor(money)
+        keep = max(keep_money, floor if plane == 1 else max(0, floor - 20) if plane == 2 else 0)
+        budget = money - keep
         if budget < 1:
             return
         shop_button_crop = (1591 / 1920, 958 / 1080, 66 / 1920, 46 / 1080)
         shop_crop = (344 / 1920, 19 / 1080, 1370 / 1920, 526 / 1080)
+
+        def owned_names():
+            return {c.name for c in self.forward_characters + self.backward_characters + self.prepare_characters if c.name}
+
+        def focus_missing(owned):
+            miss = 0
+            for b, t in focus.items():
+                have = sum(1 for n in owned if b in db.get(n, {}).get("bonds", []))
+                miss += max(0, t - have)
+            # 上一回合出战前读到的真实羁绊列表还差人，也算缺
+            real = getattr(self, "_last_bond_list", None) or {}
+            real_miss = sum(max(0, t - real[b]) for b, t in focus.items() if b in real)
+            return max(miss, real_miss)
+
         auto.click_element(shop_button_crop, "crop")
         time.sleep(2)
-        bought = False
-        texts = self._get_ocr_texts_in_crop(shop_crop)
-        cands = []
-        for name, info in self.char_db().items():
-            if name in owned or name not in texts:
-                continue
-            score = self.bond_bonus(name, counts)
-            cost = info.get("money", 9)
-            if score >= 3 and cost <= budget:  # 和 trim_bench 的保留线一致，免得买了又卖
-                cands.append((-score, cost, name))
-        for _, cost, name in sorted(cands)[:2]:
-            if cost > budget:
-                continue
-            log.info(f"羁绊链路：购买 {name}（羁绊 {'/'.join(self.char_db()[name].get('bonds', []))}）")
-            if self.try_buy_character(name):
-                budget -= cost
-                bought = True
+        bought_any = False
+        owned = owned_names()
+        counts = self.owned_bond_counts()
+        max_refresh = 0 if plane == 1 else (3 if plane == 2 else 6)
+        refreshed = 0
+        while True:
+            texts = self._get_ocr_texts_in_crop(shop_crop)
+            cands = []
+            for name, info in db.items():
+                if name in owned or name not in texts:
+                    continue
+                score = self.bond_bonus(name, counts)
+                cost = info.get("money", 9)
+                if score >= 3 and cost <= budget:
+                    cands.append((-score, cost, name))
+            for _, cost, name in sorted(cands)[:4]:
+                if cost > budget:
+                    continue
+                log.info(f"羁绊链路：购买 {name}（羁绊 {'/'.join(db[name].get('bonds', []))}）")
+                if self.try_buy_character(name):
+                    budget -= cost
+                    bought_any = True
+                    owned.add(name)
+                    for b in db[name].get("bonds", []):
+                        counts[b] = counts.get(b, 0) + 1
+            miss = focus_missing(owned)
+            if refreshed >= max_refresh or not (1 <= miss <= 2) or budget < 2 + 2:
+                break
+            auto.press_key('d')
+            refreshed += 1
+            budget -= 2
+            log.info(f"羁绊链路：主攻还差 {miss} 人，刷新商店（第 {refreshed} 次）")
+            time.sleep(1)
+        # 同一次开店里顺便买上场/主攻角色的重复卡（凑升星），不再单独开关一次商店；同样守利息线
+        keep_names = {c.name for c in self.forward_characters + self.backward_characters if c.name} | set(getattr(self, "_bond_team", ()))
+        for _ in range(4):
+            texts = self._get_ocr_texts_in_crop(shop_crop)
+            aura = getattr(self, "_aura_char", None)  # 带主角光环的角色优先升星
+            dup = sorted(((n == aura, db[n].get("money", 9), n) for n in owned if n in keep_names and n in db and n in texts and db[n].get("money", 9) <= budget), reverse=True)
+            if not dup:
+                break
+            _, cost, name = dup[0]
+            log.info(f"购买重复角色 {name}（凑升星）")
+            if not self.try_buy_character(name):
+                break
+            budget -= cost
+            bought_any = True
         auto.click_element(shop_button_crop, "crop")
         time.sleep(2)
-        if bought:
+        self._focus_short = focus_missing(owned) >= 1
+        if bought_any:
             self.check_character_status()
 
     def trim_bench(self, keep: int = 4):
@@ -3717,6 +3873,14 @@ class CurrencyWars:
                 if real:
                     tg = self.bond_targets()
                     hit = [f"{t}{b}" for b in real for t in BOND_LINK_TARGETS.get(b, []) if t >= tg.get(b, 99) and real[b] >= t]
+                    if hit:
+                        # 真实羁绊列表和领奖页实测一致，记下来不再追（领奖后挪进 cw_bond_done.json）
+                        reached = _load_json(CW_BOND_REACHED_PATH, {})
+                        for b in real:
+                            for t in BOND_LINK_TARGETS.get(b, []):
+                                if t >= tg.get(b, 99) and real[b] >= t and t not in reached.get(b, []):
+                                    reached.setdefault(b, []).append(t)
+                        _save_json(CW_BOND_REACHED_PATH, reached)
                     log.info("羁绊链路：最后一关前羁绊列表 " + " ".join(f"{b}{n}" for b, n in real.items()) + ("；应可领 " + "、".join(hit) if hit else "；没有新达成的目标"))
         else:
             log.info("本次对局结果：未知")
