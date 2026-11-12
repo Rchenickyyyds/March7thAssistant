@@ -2775,9 +2775,18 @@ class CurrencyWars:
         fc = self.forward_characters
         # 「15名不同角色」本赛季已领，不再轮换，只按费用（还剩「5费角色」「3星角色」两条）
         rotate = False
-        order.sort(key=lambda i: (rotate and (fc[i].name in picked if i < len(fc) and fc[i].name else True),
-                                  -(fc[i].money if i < len(fc) and fc[i].name else 0),
-                                  -(fc[i].level if i < len(fc) and fc[i].name else 0)))
+        team = getattr(self, "_bond_team", None) or set()
+
+        def aura_key(i):
+            c = fc[i] if i < len(fc) else None
+            if not c or not c.name:
+                return (9, 0)
+            if (c.money or 0) >= 5:
+                return (0, 0)  # 预期收益「主角光环给 5 费角色」
+            if c.name in team:
+                return (1, c.money or 0)  # 主攻阵容里最便宜的：会一直留在场上，重复卡好买，冲 3 星（「光环给 3 星角色」）
+            return (2, -(c.money or 0))
+        order.sort(key=aura_key)
         # 带「敌人难度+」的光环卡放最后
         card_texts = ["".join(self._get_ocr_texts_in_crop(c)) for c in card_crops]
         card_crops = [c for c, t in zip(card_crops, card_texts) if "敌人难度" not in t] + \
@@ -2800,10 +2809,15 @@ class CurrencyWars:
                 if not auto.find_element("尚未选择", "text", include=True, crop=(700 / 1920, 860 / 1080, 520 / 1920, 60 / 1080)):
                     if fi < len(fc) and fc[fi].name:
                         log.info(f"主角光环给 {fc[fi].name}")
+                        self._aura_char = fc[fi].name
                         if fc[fi].name not in picked:
                             _save_json(CW_PROTAGONIST_PATH, sorted(picked | {fc[fi].name}))
                     auto.click_element("确认", "text", None, 3, crop=(750 / 1920, 920 / 1080, 420 / 1920, 70 / 1080))
                     time.sleep(2)
+                    # 角色已有光环时会问「是否替换该角色原有光环？」
+                    if auto.find_element("原有光环", "text", None, 1, include=True, crop=(600 / 1920, 470 / 1080, 720 / 1920, 120 / 1080)):
+                        auto.click_element("确认", "text", None, 3, crop=(1050 / 1920, 630 / 1080, 300 / 1920, 80 / 1080))
+                        time.sleep(2)
                     return True
         log.warning("主角光环没选上，返回备战界面")
         auto.click_element("返回备战界面", "text", include=True)
