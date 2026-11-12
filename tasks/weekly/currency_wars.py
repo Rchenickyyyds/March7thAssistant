@@ -3163,7 +3163,9 @@ class CurrencyWars:
                     break
 
             money = self.check_money()
-            if cfg.currencywars_strategy == "default" and self.current_level >= 9 and money < 60:
+            # 要上场的人：主攻阵容 + 带主角光环的角色 + 为「光环给 5 费」留的 5 费角色
+            need_slots = len(set(getattr(self, "_bond_team", ())) | {n for n in (getattr(self, "_aura_char", None), self._aura5_pick() if self._want_aura5() else None) if n})
+            if cfg.currencywars_strategy == "default" and self.current_level >= max(9, min(10, need_slots)) and money < 60:
                 # 9 级已够放下主攻阵容（≤9 人）；升 10 级要花掉四五十金币，留着买角色、刷商店、升星更值
                 log.info("已到 9 级，金币留给买角色和刷商店，不再买经验")
                 break
