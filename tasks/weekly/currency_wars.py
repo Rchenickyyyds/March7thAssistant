@@ -2440,8 +2440,11 @@ class CurrencyWars:
         picked = set(_load_json(CW_PROTAGONIST_PATH, []))
         order = list(range(len(front_crops)))
         fc = self.forward_characters
-        order.sort(key=lambda i: (fc[i].name in picked if i < len(fc) and fc[i].name else True,
-                                  -(fc[i].money if i < len(fc) and fc[i].name else 0)))
+        # 「15名不同角色」本赛季已领，不再轮换，只按费用（还剩「5费角色」「3星角色」两条）
+        rotate = False
+        order.sort(key=lambda i: (rotate and (fc[i].name in picked if i < len(fc) and fc[i].name else True),
+                                  -(fc[i].money if i < len(fc) and fc[i].name else 0),
+                                  -(fc[i].level if i < len(fc) and fc[i].name else 0)))
         # 带「敌人难度+」的光环卡放最后
         card_texts = ["".join(self._get_ocr_texts_in_crop(c)) for c in card_crops]
         card_crops = [c for c, t in zip(card_crops, card_texts) if "敌人难度" not in t] + \
