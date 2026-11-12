@@ -2028,18 +2028,30 @@ class CurrencyWars:
             time.sleep(1)
         # 同一次开店里顺便买上场/主攻角色的重复卡（凑升星），不再单独开关一次商店；同样守利息线
         keep_names = {c.name for c in self.forward_characters + self.backward_characters if c.name} | set(getattr(self, "_bond_team", ()))
-        for _ in range(4):
-            texts = self._get_ocr_texts_in_crop(shop_crop)
-            aura = getattr(self, "_aura_char", None)  # 带主角光环的角色优先升星
-            dup = sorted(((n == aura, db[n].get("money", 9), n) for n in owned if n in keep_names and n in db and n in texts and db[n].get("money", 9) <= budget), reverse=True)
-            if not dup:
+        dup_refresh = 0
+        while True:
+            for _ in range(4):
+                texts = self._get_ocr_texts_in_crop(shop_crop)
+                aura = getattr(self, "_aura_char", None)  # 带主角光环的角色优先升星
+                dup = sorted(((n == aura, db[n].get("money", 9), n) for n in owned if n in keep_names and n in db and n in texts and db[n].get("money", 9) <= budget), reverse=True)
+                if not dup:
+                    break
+                _, cost, name = dup[0]
+                log.info(f"购买重复角色 {name}（凑升星）")
+                if not self.try_buy_character(name):
+                    break
+                budget -= cost
+                bought_any = True
+            # 第三位面主攻已凑齐、金币还多：刷商店买重复卡升星（第六局 3-7 还剩 80 金币没花）。
+            # 升星能提高阵容价值，也是「光环给 3 星角色」「6 名 3 星角色」的前提
+            if plane < 3 or focus_missing(owned) >= 1 or budget < 12 or dup_refresh >= 8:
                 break
-            _, cost, name = dup[0]
-            log.info(f"购买重复角色 {name}（凑升星）")
-            if not self.try_buy_character(name):
-                break
-            budget -= cost
-            bought_any = True
+            auto.press_key('d')
+            dup_refresh += 1
+            budget -= 2
+            time.sleep(1)
+        if dup_refresh:
+            log.info(f"主攻已凑齐，刷新商店 {dup_refresh} 次找重复卡升星")
         auto.click_element(shop_button_crop, "crop")
         time.sleep(2)
         self._focus_short = focus_missing(owned) >= 1
